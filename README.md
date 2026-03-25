@@ -1,1 +1,2 @@
-The files contain the Kernel Ridge Regression model for doing short prediciton of NPP. final_Chl_02_08_2025_BSOSE.py has the prediction while the sensitivity analysis ar ein the other file 
+The files contain the Kernel Ridge Regression model for doing short prediction of NPP. NPP_paper_preprocessdata.py contain the pre-process of data,
+while NPP_paper_modelprediction.py contain the prediction from linear regression and kernel regression. NPP_paper_modelprediction_senstivity_to_allcategory.py has the sensitivity analysis to the inputs, while NPP_paper_rmsesignficance.py has the signficance test of linear regression rmse compared to kernel regression rmse. 
