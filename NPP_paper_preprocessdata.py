@@ -78,6 +78,25 @@ import numpy as np
 import numpy as np
 from scipy.stats import t as tdist
 
+
+def convert_0_360_to_neg180_180(_ds):
+    """
+    Convert longitude from 0-360 degrees to -180 to 180 degrees.
+    """
+    # Support both DataArray and Dataset with possible 'lon' or 'XC' coordinate names
+    if 'lon' in _ds.coords:
+        lon_key = 'lon'
+    elif 'XC' in _ds.coords:
+        lon_key = 'XC'
+    else:
+        return _ds  # nothing to do
+
+    if (_ds[lon_key].min() >= 0) and (_ds[lon_key].max() <= 360):
+        with xr.set_options(keep_attrs=True):
+            _ds.coords[lon_key] = xr.where(_ds[lon_key] > 180, _ds[lon_key] - 360, _ds[lon_key])
+        _ds = _ds.sortby(lon_key)
+    return _ds
+
 def pc_trend_rednoise(time, x):
     """
     Linear trend significance accounting for AR(1) residuals
@@ -175,6 +194,466 @@ def detrend_dim(da, dim, deg=1):
 def remove_time_mean(x):
     return x - x.mean(dim='time',skipna=True)
 
+
+
+seconds_per_year=12.011*1000*86400
+data = xr.open_dataset("/projects/CDEUTSCH/DATA/NPP_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
+
+seconds_per_year =12.011*1000*86400
+
+#data = data.coarsen(YC=16, boundary="pad").mean()
+#data = data.coarsen(XC=16, boundary="pad").mean()
+#data = data #* seconds_per_year  # Now in molC/m³/year
+npp = data.BLGNPP*seconds_per_year  # Assuming this is the variable name
+
+
+
+# Step 2: Mask top 100 m
+Z_top = data.Z.where(npp.Z >= -100, drop=True)
+data = data.sel(Z=Z_top)
+
+drF = data.drF  # (Z), vertical cell thickness in m
+hFacC = data.hFacC  # (Z, YC, XC), vertical fraction of wet cell
+rA = data.rA
+
+# Step 3: Align shapes for multiplication
+drF_top = drF.sel(Z=Z_top)
+hFacC_top = hFacC.sel(Z=Z_top)
+
+# Step 4: Broadcast to match NPP shape
+#drF_exp = drF_top.broadcast_like(npp)
+#hFacC_exp = hFacC_top.broadcast_like(npp)
+
+# Step 5: Compute the volume-weighted NPP (mol C / m² / year)
+data_NPP = (npp * drF_top * hFacC_top).sum(dim="Z") # [mol C / m² / yr]
+
+fig = plt.figure(figsize=(22, 12), dpi=600)
+
+gs = fig.add_gridspec(
+    2, 2,
+    width_ratios=[1, 1.8],   # second column wider
+    height_ratios=[1, 1],
+    wspace=0.25,
+    hspace=0.25
+)
+
+# -------------------------
+# 1) Original NPP map
+# -------------------------
+ax1 = fig.add_subplot(gs[0, 0], projection=ccrs.SouthPolarStereo(central_longitude=0))
+ax1.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+ax1.coastlines(resolution="110m")
+
+gl1 = ax1.gridlines(draw_labels=True)
+gl1.top_labels = False
+gl1.right_labels = False
+
+levels1 = np.linspace(-550, 550, 40)
+
+fill1 = ax1.contourf(
+    np.array(data_NPP.XC),
+    np.array(data_NPP.YC),
+    np.array(data_NPP.mean("time")).squeeze(),
+    levels=levels1,
+    cmap=plt.cm.RdBu_r,
+    transform=ccrs.PlateCarree()
+)
+ax1.text(0.02, 0.95, 'a', transform=ax1.transAxes,
+         fontsize=22, fontweight='bold', va='top')
+ax1.set_title("NPP BSOSE", fontsize=20)
+ax1.set_aspect("equal")
+
+cb1 = plt.colorbar(fill1, ax=ax1, orientation="vertical", shrink=0.75)
+cb1.set_label("NPP (mgC m$^{-2}$ day$^{-1}$)", fontsize=16)
+cb1.ax.tick_params(labelsize=14)
+cb1.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+
+
+mean_npp = data_NPP.mean(dim=['XC', 'YC'])
+
+# 3. Plot the time series (e.g. at a given depth level, or integrated)
+#    Here we’ll pick the surface depth (Z=0) as an example
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+ax2 = fig.add_subplot(gs[0, 1])
+
+mean_npp_original = data_NPP.mean(dim=["XC", "YC"])
+ax2.text(0.02, 0.95, 'b', transform=ax2.transAxes,
+         fontsize=22, fontweight='bold', va='top')
+ax2.plot(data_NPP.time, mean_npp_original, color="black", linewidth=2)
+ax2.set_title("Spatial mean NPP BSOSE", fontsize=20)
+ax2.set_xlabel("Time", fontsize=16)
+ax2.set_ylabel("NPP (mgC m$^{-2}$ day$^{-1}$)", fontsize=16)
+ax2.tick_params(axis="both", labelsize=14)
+ax2.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+ax2.grid(True)
+
+
+
+data = xr.open_dataset("/projects/CDEUTSCH/DATA/npp_coarsened.nc", engine="h5netcdf")
+print('npp',data)
+npp_coarsened = data.npp
+print("After time alignment:")
+#print("npp time:", data_NPP.time.min().values, "to", data_NPP.time.max().values)
+#print("npp_coarsened time:", npp_coarsened.time.min().values, "to", npp_coarsened.time.max().values)
+
+
+lon, lat=np.meshgrid(npp_coarsened.lon,npp_coarsened.lat)
+
+# -------------------------
+# 3) Coarsened NPP map
+# -------------------------
+ax3 = fig.add_subplot(gs[1, 0], projection=ccrs.SouthPolarStereo(central_longitude=0))
+ax3.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+ax3.coastlines(resolution="110m")
+ax3.text(0.02, 0.95, 'c', transform=ax3.transAxes,
+         fontsize=22, fontweight='bold', va='top')
+
+gl3 = ax3.gridlines(draw_labels=True)
+gl3.top_labels = False
+gl3.right_labels = False
+
+levels2 = np.linspace(-550, 550, 40)
+
+fill2 = ax3.contourf(
+    np.array(npp_coarsened.lon),
+    np.array(npp_coarsened.lat),
+    np.array(npp_coarsened.mean("time")).squeeze(),
+    levels=levels2,
+    cmap=plt.cm.RdBu_r,
+    transform=ccrs.PlateCarree()
+)
+
+ax3.set_title("NPP Eppley-VGPM", fontsize=20)
+ax3.set_aspect("equal")
+
+cb2 = plt.colorbar(fill2, ax=ax3, orientation="vertical", shrink=0.75)
+cb2.set_label("NPP (mgC m$^{-2}$ day$^{-1}$)", fontsize=16)
+cb2.ax.tick_params(labelsize=14)
+cb2.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+
+ax4 = fig.add_subplot(gs[1, 1])
+
+mean_npp_coarsened = npp_coarsened.mean(dim=["lon", "lat"])
+ax4.text(0.02, 0.95, 'd', transform=ax4.transAxes,
+         fontsize=22, fontweight='bold', va='top')
+ax4.plot(npp_coarsened.time, mean_npp_coarsened, color="black", linewidth=2)
+ax4.set_title("Spatial mean NPP Eppley-VGPM", fontsize=20)
+ax4.set_xlabel("Time", fontsize=16)
+ax4.set_ylabel("NPP (mgC m$^{-2}$ day$^{-1}$)", fontsize=16)
+ax4.tick_params(axis="both", labelsize=14)
+ax4.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+ax4.grid(True)
+
+
+plt.tight_layout()
+plt.savefig("Figure1.pdf", dpi=600,
+    bbox_inches="tight",
+    pad_inches=0.05
+)
+
+
+
+
+
+
+
+
+import xesmf as xe
+import numpy as np
+import xarray as xr
+
+data = xr.open_dataset("/projects/CDEUTSCH/DATA/NPP_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
+data=convert_0_360_to_neg180_180(data)
+data['time'] = pd.date_range("2013-01-01", periods=132, freq="M")
+
+seconds_per_year =12.011*1000*86400
+
+data = data.coarsen(YC=16, boundary="pad").mean()
+data = data.coarsen(XC=16, boundary="pad").mean()
+#data = data #* seconds_per_year  # Now in molC/m³/year
+npp = data.BLGNPP*seconds_per_year  # Assuming this is the variable name
+
+
+
+# Step 2: Mask top 100 m
+Z_top = data.Z.where(npp.Z >= -100, drop=True)
+data = data.sel(Z=Z_top)
+
+drF = data.drF  # (Z), vertical cell thickness in m
+hFacC = data.hFacC  # (Z, YC, XC), vertical fraction of wet cell
+rA = data.rA
+
+# Step 3: Align shapes for multiplication
+drF_top = drF.sel(Z=Z_top)
+hFacC_top = hFacC.sel(Z=Z_top)
+
+# Step 4: Broadcast to match NPP shape
+#drF_exp = drF_top.broadcast_like(npp)
+#hFacC_exp = hFacC_top.broadcast_like(npp)
+
+# Step 5: Compute the volume-weighted NPP (mol C / m² / year)
+data_NPP = (npp * drF_top * hFacC_top).sum(dim="Z") # [mol C / m² / yr]
+
+
+# --- Ensure data_NPP has lon/lat coordinate names xESMF expects ---
+# Many MOM6/BSOSE outputs use 'XC' and 'YC' for horizontal coords. If so,
+# rename them to 'lon' and 'lat' so the regridder grids and data align cleanly.
+# --- Ensure data_NPP has lon/lat coordinate names xESMF expects ---
+# Many MOM6/BSOSE outputs use 'XC' and 'YC' for horizontal coords. If so,
+# rename them to 'lon' and 'lat' so the regridder grids and data align cleanly.
+if ('lon' not in data_NPP.coords) and ('XC' in data_NPP.coords):
+    data_NPP = data_NPP.rename({'XC': 'lon', 'YC': 'lat'})
+
+
+data = xr.open_dataset("/projects/CDEUTSCH/DATA/npp_coarsened.nc", engine="h5netcdf")
+npp_coarsened = data.npp
+
+
+print('npp_coarsed',npp_coarsened)
+
+# Similarly ensure the satellite product has 'lon'/'lat' coords
+if ('lon' not in npp_coarsened.coords) and ('XC' in npp_coarsened.coords):
+    npp_coarsened = npp_coarsened.rename({'XC': 'lon', 'YC': 'lat'})
+
+# Print coordinate info for debugging
+print("Model grid coordinates:")
+print("Longitude range:", data_NPP.lon.min().values, "to", data_NPP.lon.max().values)
+print("Latitude range:", data_NPP.lat.min().values, "to", data_NPP.lat.max().values)
+print("\nSatellite grid coordinates:")
+print("Longitude range:", npp_coarsened.lon.min().values, "to", npp_coarsened.lon.max().values)
+print("Latitude range:", npp_coarsened.lat.min().values, "to", npp_coarsened.lat.max().values)
+
+# === 1️⃣ Define your grids explicitly as 1D coordinate arrays ===
+# xESMF expects grid dicts containing 1D lon/lat arrays (in degrees).
+grid_model = {
+    'lon': data_NPP['lon'].values,
+    'lat': data_NPP['lat'].values
+}
+grid_satellite = {
+    'lon': npp_coarsened['lon'].values,
+    'lat': npp_coarsened['lat'].values
+}
+
+# === 2️⃣ Create both regridders ONCE ===
+# Use reuse_weights=True when rerunning interactively to avoid recomputing weights unnecessarily.
+regridder_model_to_satellite = xe.Regridder(
+    grid_model,
+    grid_satellite,
+    method='bilinear',
+    periodic=True,
+)
+
+regridder_satellite_to_model = xe.Regridder(
+    grid_satellite,
+    grid_model,
+    method='bilinear',
+    periodic=True,
+)
+
+data_NPP = data_NPP.transpose('time', 'lat', 'lon')
+npp_on_satellite = regridder_model_to_satellite(data_NPP)
+
+print('npp_coarsened',npp_coarsened)
+print('npp_on_satellite',npp_on_satellite)
+correlation_map2 = xr.corr(npp_coarsened, npp_on_satellite, dim='time')
+
+# ============================================================
+# AR(1) SIGNIFICANCE FOR CORRELATION MAP
+# ============================================================
+
+import numpy as np
+import xarray as xr
+from scipy.stats import t as student_t
+
+def lag1_autocorr(ts):
+    ts = ts[np.isfinite(ts)]
+    if len(ts) < 3:
+        return np.nan
+    return np.corrcoef(ts[:-1], ts[1:])[0,1]
+
+def corr_sig_ar1(ts1, ts2, alpha=0.01):
+
+    mask = np.isfinite(ts1) & np.isfinite(ts2)
+    ts1 = ts1[mask]
+    ts2 = ts2[mask]
+
+    if len(ts1) < 10:
+        return np.nan, False
+
+    r = np.corrcoef(ts1, ts2)[0,1]
+
+    r1 = lag1_autocorr(ts1)
+    r2 = lag1_autocorr(ts2)
+
+    if np.isnan(r1) or np.isnan(r2):
+        return r, False
+
+    n = len(ts1)
+
+    # Bretherton effective DOF
+    neff = n * (1 - r1*r2) / (1 + r1*r2)
+    neff = max(neff, 3)
+
+    tval = r * np.sqrt((neff - 2) / (1 - r**2))
+    pval = 2 * (1 - student_t.cdf(abs(tval), df=neff-2))
+
+    return r, (pval < alpha)
+
+# ============================================================
+# COMPUTE SIGNIFICANCE GRIDPOINT BY GRIDPOINT
+# ============================================================
+
+lat = correlation_map2.lat.values
+lon = correlation_map2.lon.values
+
+sig_99 = np.zeros((len(lat), len(lon)), dtype=bool)
+
+sat_np   = npp_coarsened.values
+model_np = npp_on_satellite.values
+
+for i in range(len(lat)):
+    for j in range(len(lon)):
+
+        ts1 = sat_np[:, i, j]
+        ts2 = model_np[:, i, j]
+
+        _, sig = corr_sig_ar1(ts1, ts2, alpha=0.01)
+        sig_99[i, j] = sig
+
+sig_99 = xr.DataArray(sig_99, coords=correlation_map2.coords, dims=correlation_map2.dims)
+
+corr_sig = correlation_map2.where(sig_99)
+
+# === 3️⃣ Regrid model -> satellite grid ===
+print('\nPre-regridding info:')
+print('data_NPP dims, coords:', data_NPP.dims, list(data_NPP.coords))
+print('data_NPP shape:', data_NPP.shape)
+
+# Ensure data is in correct order (time, lat, lon)
+data_NPP = data_NPP.transpose('time', 'lat', 'lon')
+
+
+fig = plt.figure(figsize=(16, 7), dpi=600)
+ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
+ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.SouthPolarStereo(central_longitude=0))
+
+# =====================================================
+# (a) Correlation
+# =====================================================
+ax1.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+ax1.coastlines(resolution="110m")
+
+gl1 = ax1.gridlines(draw_labels=True)
+gl1.top_labels = False
+gl1.right_labels = False
+
+levels = np.linspace(-1, 1, 41)
+
+ax1.contourf(
+    correlation_map2.lon,
+    correlation_map2.lat,
+    correlation_map2,
+    levels=levels,
+    cmap="Greys",
+    alpha=0.3,
+    transform=ccrs.PlateCarree()
+)
+
+fill1 = ax1.contourf(
+    correlation_map2.lon,
+    correlation_map2.lat,
+    corr_sig,
+    levels=levels,
+    cmap=plt.cm.RdBu_r,
+    transform=ccrs.PlateCarree()
+)
+
+ax1.contour(
+    correlation_map2.lon,
+    correlation_map2.lat,
+    sig_99,
+    levels=[0.5],
+    colors="black",
+    linewidths=0.8,
+    transform=ccrs.PlateCarree()
+)
+
+ax1.set_title("Correlation", fontsize=18)
+ax1.text(
+    0.02, 0.96, "a",
+    transform=ax1.transAxes,
+    fontsize=24,
+    fontweight="bold",
+    va="top",
+    bbox=dict(facecolor="white", alpha=0.8, edgecolor="none")
+)
+
+cb1 = plt.colorbar(fill1, ax=ax1, orientation="vertical", shrink=0.75)
+cb1.set_label("Correlation (r)", fontsize=16)
+cb1.ax.tick_params(labelsize=14)
+cb1.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
+
+
+# =====================================================
+# (b) Error
+# =====================================================
+error = npp_on_satellite - npp_coarsened
+
+ax2.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+ax2.coastlines(resolution="110m")
+
+gl2 = ax2.gridlines(draw_labels=True)
+gl2.top_labels = False
+gl2.right_labels = False
+
+levels_error = np.linspace(-600, 600, 30)
+ticks_error = np.arange(-600, 601, 200)
+
+fill2 = ax2.contourf(
+    error.lon,
+    error.lat,
+    error.mean("time").squeeze(),
+    levels=levels_error,
+    cmap=plt.cm.RdBu_r,
+    transform=ccrs.PlateCarree()
+)
+
+ax2.set_title("Bias", fontsize=18)
+ax2.text(
+    0.02, 0.96, "b",
+    transform=ax2.transAxes,
+    fontsize=24,
+    fontweight="bold",
+    va="top",
+    bbox=dict(facecolor="white", alpha=0.8, edgecolor="none")
+)
+
+cb2 = plt.colorbar(
+    fill2,
+    ax=ax2,
+    orientation="vertical",
+    shrink=0.75,
+    ticks=ticks_error
+)
+cb2.set_label("NPP difference (mgC m$^{-2}$ day$^{-1}$)", fontsize=16)
+cb2.ax.tick_params(labelsize=14)
+cb2.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+plt.tight_layout()
+
+plt.savefig(
+    "Figure2.pdf",
+    dpi=600,
+    bbox_inches="tight",
+    pad_inches=0.05
+)
+
+
+
 data_thetao = xr.open_dataset("/projects/CDEUTSCH/DATA/Theta_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
 #data_thetao = data_thetao.coarsen(YC=8, boundary="pad").mean()
 #data_thetao = data_thetao.coarsen(XC=8, boundary="pad").mean()
@@ -204,78 +683,6 @@ time_mean_THETA_anom=time_mean_THETA_anom.coarsen(XC=16, boundary="pad").mean()
 time_mean_THETA_anom2=time_mean_THETA_anom/time_mean_THETA_anom.std()
 #time_mean_THETA_anom2=time_mean_THETA_anom2.coarsen(XC=16, boundary="pad").mean()
 
-
-coslat = np.cos(np.deg2rad(time_mean_THETA_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_THETA_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_THETA = eofs # broadcast std across spatial dims
-pcs_normalized_THETA = pcs # broadcast std across spatial dims
-
-eofs_normalized_THETA *= -1
-pcs_normalized_THETA *= -1
-# Step 5: Explained variance
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1, 1, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_THETA.XC),
-        np.array(eofs_normalized_THETA.YC),
-        np.array(eofs_normalized_THETA.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF THETA', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_THETA.pdf", bbox_inches='tight')
-
-
-variance_fractions = solver.varianceFraction()
-fig = plt.figure(figsize=(12, 4), dpi=300)
-
-plt.plot(pcs_normalized_THETA.time, pcs_normalized_THETA.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=14)
-plt.xlabel("Time", fontsize=14)
-plt.tick_params(axis='both', which='major', labelsize=14)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_THETA_timeseries.png")
-plt.show()
 
 
 time_mean_THETA_anom2_1=time_mean_THETA_anom2.isel(time=slice(0,36)).mean('time')
@@ -347,77 +754,6 @@ time_mean_SSH_anom=time_mean_SSH_anom.coarsen(XC=16, boundary="pad").mean()
 time_mean_SSH_anom2=time_mean_SSH_anom/time_mean_SSH_anom.std()
 #time_mean_SSH_anom2=time_mean_SSH_anom2.coarsen(XC=16, boundary="pad").mean()
 
-coslat = np.cos(np.deg2rad(time_mean_SSH_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_SSH_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_SSH = eofs # broadcast std across spatial dims
-pcs_normalized_SSH = pcs # broadcast std across spatial dims
-
-eofs_normalized_SSH *= -1
-pcs_normalized_SSH *= -1
-
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_SSH.XC),
-        np.array(eofs_normalized_SSH.YC),
-        np.array(eofs_normalized_SSH.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF SSH', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_SSH.pdf", bbox_inches='tight')
-
-
-# Step 5: Explained variance
-variance_fractions = solver.varianceFraction()
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_SSH.time, pcs_normalized_SSH.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=14)
-plt.xlabel("Time", fontsize=14)
-plt.tick_params(axis='both', which='major', labelsize=14)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("pc1_SSH_timeseries.png")
-plt.show()
 
 time_mean_SSH_anom2_1=time_mean_SSH_anom2.isel(time=slice(0,36)).mean('time')
 time_mean_SSH_anom2_2=time_mean_SSH_anom2.isel(time=slice(132-36,132)).mean('time')
@@ -486,35 +822,6 @@ time_mean_SALT_anom=time_mean_SALT_anom.coarsen(XC=16, boundary="pad").mean()
 time_mean_SALT_anom2=time_mean_SALT_anom/time_mean_SALT_anom.std()
 #time_mean_SALT_anom2=time_mean_SALT_anom2.coarsen(XC=16, boundary="pad").mean()
 
-coslat = np.cos(np.deg2rad(time_mean_SALT_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_SALT_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_SALT = eofs # broadcast std across spatial dims
-pcs_normalized_SALT = pcs # broadcast std across spatial dim
-
-eofs_normalized_SALT *= -1
-pcs_normalized_SALT *= -1
-# Step 5: Explained variance
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_SALT.time, pcs_normalized_SALT.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.xlabel("Time", fontsize=14)
-plt.ylabel("Amplitude", fontsize=14)
-plt.grid(True)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_SALT_timeseries.png")
-plt.show()
-
 data_SIArea = xr.open_dataset("/projects/CDEUTSCH/DATA/SIArea_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
 #data_SIArea = data_SIArea.coarsen(YC=8, boundary="pad").mean()
 #data_SIArea = data_SIArea.coarsen(XC=8, boundary="pad").mean()
@@ -542,78 +849,6 @@ time_mean_SIArea_anom=time_mean_SIArea_anom.coarsen(XC=16, boundary="pad").mean(
 time_mean_SIArea_anom2=time_mean_SIArea_anom/time_mean_SIArea_anom.std()
 #time_mean_SIArea_anom2=time_mean_SIArea_anom2.coarsen(XC=16, boundary="pad").mean()
 
-coslat = np.cos(np.deg2rad(time_mean_SIArea_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_SIArea_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_SIArea = eofs # broadcast std across spatial dims
-pcs_normalized_SIArea = pcs # broadcast std across spatial dims
-
-eofs_normalized_SIArea *= -1
-pcs_normalized_SIArea *= -1
-
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_SIArea.XC),
-        np.array(eofs_normalized_SIArea.YC),
-        np.array(eofs_normalized_SIArea.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF SIArea', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_SIArea.pdf", bbox_inches='tight')
-
-
-
-
-# Step 5: Explained variance
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_SIArea.time, pcs_normalized_SIArea.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=14)
-plt.xlabel("Time", fontsize=14)
-plt.tick_params(axis='both', which='major', labelsize=14)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_SIArea_timeseries.png")
-plt.show()
 
 
 time_mean_SIArea_anom2_1=time_mean_SIArea_anom2.isel(time=slice(0,36)).mean('time')
@@ -683,75 +918,6 @@ time_mean_MLD_anom=time_mean_MLD_anom.coarsen(YC=16, boundary="pad").mean()
 time_mean_MLD_anom=time_mean_MLD_anom.coarsen(XC=16, boundary="pad").mean()
 time_mean_MLD_anom2=time_mean_MLD_anom/time_mean_MLD_anom.std()
 
-coslat = np.cos(np.deg2rad(time_mean_MLD_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_MLD_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_MLD = eofs # broadcast std across spatial dims
-pcs_normalized_MLD = pcs # broadcast std across spatial dims
-
-eofs_normalized_MLD *= -1
-pcs_normalized_MLD *= -1
-
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_MLD.XC),
-        np.array(eofs_normalized_MLD.YC),
-        np.array(eofs_normalized_MLD.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF MLD', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_MLD.pdf", bbox_inches='tight')
-
-variance_fractions = solver.varianceFraction()
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_MLD.time, pcs_normalized_MLD.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=14)
-plt.xlabel("Time", fontsize=14)
-plt.tick_params(axis='both', which='major', labelsize=14)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_MLD_timeseries.png")
-plt.show()
 
 
 time_mean_MLD_anom2_1=time_mean_MLD_anom2.isel(time=slice(0,36)).mean('time')
@@ -860,34 +1026,6 @@ time_mean_TRAC04_anom=time_mean_TRAC04_anom.coarsen(XC=16, boundary="pad").mean(
 time_mean_TRAC04_anom2=time_mean_TRAC04_anom/time_mean_TRAC04_anom.std()
 #time_mean_TRAC04_anom2=time_mean_TRAC04_anom2.coarsen(XC=16, boundary="pad").mean()
 
-coslat = np.cos(np.deg2rad(time_mean_TRAC04_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_TRAC04_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-
-fig = plt.figure(figsize=(12, 4), dpi=300)
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_TRAC04 = eofs / pcs_std  # broadcast std across spatial dims
-pcs_normalized_TRAC04 = pcs * pcs_std  # broadcast std across spatial dims
-# Step 5: Explained variance
-plt.plot(pcs_normalized_TRAC04.time, pcs_normalized_TRAC04.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("pc1_TRAC04_timeseries.png")
-plt.show()
-
 
 data_irris = xr.open_dataset("/projects/CDEUTSCH/DATA/irris_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
 #data_irris =data_irris.coarsen(YC=8, boundary="pad").mean()
@@ -941,91 +1079,6 @@ time_mean_irris_anom=time_mean_irris_anom.coarsen(YC=16, boundary="pad").mean()
 time_mean_irris_anom=time_mean_irris_anom.coarsen(XC=16, boundary="pad").mean()
 time_mean_irris_anom2=time_mean_irris_anom/time_mean_irris_anom.std()
 #time_mean_irris_anom2=time_mean_irris_anom2.coarsen(XC=16, boundary="pad").mean()
-
-coslat = np.cos(np.deg2rad(time_mean_irris_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_irris_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=1)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-coslat = np.cos(np.deg2rad(time_mean_irris_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_irris_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_irris = eofs # broadcast std across spatial dims
-pcs_normalized_irris = pcs # broadcast std across spatial dims
-
-eofs_normalized_irris *= -1
-pcs_normalized_irris *= -1
-
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_irris.XC),
-        np.array(eofs_normalized_irris.YC),
-        np.array(eofs_normalized_irris.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF Irradiance', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_irris.pdf", bbox_inches='tight')
-
-
-fig = plt.figure(figsize=(12, 4), dpi=300)
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_irris = eofs # broadcast std across spatial dims
-pcs_normalized_irris = pcs   # broadcast std across spatial dims
-# Step 5: Explained variance
-plt.plot(pcs_normalized_irris.time, pcs_normalized_irris.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_irris_timeseries.png")
-plt.show()
 
 
 time_mean_irris_anom2_1=time_mean_irris_anom2.isel(time=slice(0,36)).mean('time')
@@ -1125,131 +1178,6 @@ time_mean_TRAC06_anom=time_mean_TRAC06_anom.coarsen(XC=16, boundary="pad").mean(
 time_mean_TRAC06_anom2=time_mean_TRAC06_anom/time_mean_TRAC06_anom.std()
 #time_mean_TRAC06_anom2=time_mean_TRAC06_anom2.coarsen(XC=16, boundary="pad").mean()
 
-coslat = np.cos(np.deg2rad(time_mean_TRAC06_anom2.YC))
-wgts = np.sqrt(coslat)
-da_weighted = time_mean_TRAC06_anom2 * wgts
-
-# Step 3: Initialize EOF solver
-solver = Eof(da_weighted)
-
-# Step 4: Get EOFs and PCs
-eofs = solver.eofs(neofs=3,eofscaling=2)      # spatial patterns
-pcs = solver.pcs(npcs=3, pcscaling=1)          # time series
-
-pcs_std = pcs.std()  # shape: (mode,)
-eofs_normalized_TRAC06=eofs
-pcs_normalized_TRAC06=pcs
-
-eofs_normalized_TRAC06 *= -1
-pcs_normalized_TRAC06 *= -1
-
-# Step 5: Explained variance
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_TRAC06.XC),
-        np.array(eofs_normalized_TRAC06.YC),
-        np.array(eofs_normalized_TRAC06.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF Fe', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_TRAC06.pdf", bbox_inches='tight')
-plt.close()
-
-
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_TRAC06.time, pcs_normalized_TRAC06.isel(mode=0), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 1", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_TRAC06_timeseries.png")
-plt.show()
-
-
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-1.2, 1.2, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized_TRAC06.XC),
-        np.array(eofs_normalized_TRAC06.YC),
-        np.array(eofs_normalized_TRAC06.isel(mode=1)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF Fe', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Supplemental_eof_TRAC06_2.pdf", bbox_inches='tight')
-plt.close()
-
-
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(pcs_normalized_TRAC06.time, pcs_normalized_TRAC06.isel(mode=1), color='black', linewidth=2)
-#plt.title("Principal Component 1", fontsize=16)
-plt.ylabel("Principal Component 2", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Supplemental_pc1_TRAC06_timeseries_2.png")
-plt.show()
-
 
 
 time_mean_TRAC06_anom2_1=time_mean_TRAC06_anom2.isel(time=slice(0,36)).mean('time')
@@ -1309,274 +1237,6 @@ time_mean_NO3_Fe_ratio_anom2=time_mean_NO3_Fe_ratio_anom/time_mean_NO3_Fe_ratio_
 
 
 
-
-#data_NPP= data_NPP.where(data_NPP.maskC == 1)
-def convert_0_360_to_neg180_180(_ds):
-    """
-    Convert longitude from 0-360 degrees to -180 to 180 degrees.
-    """
-    attrs = _ds['XC'].attrs
-    if (_ds['XC'].min() >= 0) and (_ds['XC'].max() <= 360):
-        with xr.set_options(keep_attrs=True):
-            _ds.coords['XC'] = xr.where(_ds['XC'] > 180, _ds['XC'] - 360, _ds['XC'])
-        _ds = _ds.sortby('XC')
-    return _ds
-
-# Apply the conversion to your dataset
-#data_NPP = convert_0_360_to_neg180_180(data_NPP)
-#dz = np.abs(np.gradient(data_NPP.Z.values))  # dz in meters
-
-# Broadcast to match the data shape
-#dz_xr = xr.DataArray(dz, dims=["Z"], coords={"Z": data_NPP.Z})
-ds = xr.open_dataset(
-    "/projects/CDEUTSCH/DATA/NPP_bsoseI155_2013to2023_monthly.h5",
-    engine="h5netcdf"
-)
-ds = ds.coarsen(YC=8, XC=8, boundary="trim").mean()
-
-seconds_per_year =12.011*1000*86400  # 31,536,000
-# Select first 132 months
-ds = ds.isel(time=slice(0, 132))
-NPP = ds["BLGNPP"]*seconds_per_year   # (time, Zl, YC, XC)
-summer_months = [12, 1, 2]   # December, January, February
-
-# Filter by summer months
-NPP_summer = NPP.sel(time=NPP["time"].dt.month.isin(summer_months))
-
-# Filter by depth (Zl > -100)
-NPP_summer_top = NPP_summer.sel(Z=NPP_summer["Z"] > -40)
-
-NPP_mean = NPP_summer_top.mean(dim=["XC", "time"], skipna=True)
-
-# --- Plot YC–Zl section ---
-plt.figure(figsize=(8, 6))
-cf = plt.contourf(
-    NPP_mean["YC"],
-    NPP_mean["Z"],
-    NPP_mean.transpose("Z", "YC"),
-    cmap="RdBu_r",
-    levels=20
-)
-
-#plt.gca().invert_yaxis()   # depth increases downward
-plt.colorbar(cf, label="NPP (mol C/m2/day)")
-plt.xlabel("Latitude (°)")
-plt.ylabel("Depth (m)")
-#plt.title("Summer Mean NPP (mol C/m2/day)")
-
-plt.tight_layout()
-plt.savefig("NPP_summer_section.png", dpi=150)
-
-
-#data_NPP = data_NPP.where(data_NPP.Z >= -100, drop=True)
-#data_NPP = (data_NPP * dz_xr).sum(dim="Z")
-seconds_per_year=12.011*1000*86400
-data = xr.open_dataset("/projects/CDEUTSCH/DATA/NPP_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
-
-#data = data.coarsen(YC=8, boundary="pad").mean()
-#data = data.coarsen(XC=8, boundary="pad").mean()
-data = data * seconds_per_year  # Now in molC/m³/year
-npp = data.BLGNPP  # Assuming this is the variable name
-
-# Step 2: Mask top 100 m
-Z_top = npp.Z.where(npp.Z >= -100, drop=True)
-npp = npp.sel(Z=Z_top)
-
-
-drF = data.drF  # (Z), vertical cell thickness in m
-hFacC = data.hFacC  # (Z, YC, XC), vertical fraction of wet cell
-rA = data.rA
-
-# Step 3: Align shapes for multiplication
-drF_top = drF.sel(Z=Z_top)
-hFacC_top = hFacC.sel(Z=Z_top)
-
-# Step 4: Broadcast to match NPP shape
-#drF_exp = drF_top.broadcast_like(npp)
-#hFacC_exp = hFacC_top.broadcast_like(npp)
-
-# Step 5: Compute the volume-weighted NPP (mol C / m² / year)
-data_NPP = (npp * drF_top * hFacC_top).sum(dim="Z")  # [mol C / m² / yr]
-
-print('data_NPP',data_NPP)
-
-
-print('data_NPP',data_NPP)
-
-for i in range(1):
-    
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-    # Define the yticks for latitude
-    #lat_formatter = cticker.LatitudeFormatter()
-    #ax.yaxis.set_major_formatter(lat_formatter)
-    
-    levels = np.linspace(0, 550, 40)
-    fill = ax.contourf(
-    np.array(data_NPP.XC),
-    np.array(data_NPP.YC),
-    np.array(data_NPP.mean('time')).squeeze(),
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-    )
-    # Make the aspect ratio equal to get a circular plot
-    ax.set_aspect('equal')
-
-    # Colorbar
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    font_size = 20  # Adjust as appropriate.
-    cb.ax.tick_params(labelsize=font_size)
-    cb.set_label('NPP (mgC/m²/day)', fontsize=20, labelpad=15)  
-    #ax.contour(lon,lat, no3_mean.squeeze(),color='k',cmap=plt.cm.RdBu_r, transform=ccrs.PlateCarree())
-    # Set the latitude limits
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-plt.savefig("Figure1a_NPP.pdf")
-
-from scipy.stats import linregress
-
-from scipy.stats import t as tdist
-import numpy as np
-
-
-def linear_trend(y, x):
-    """Return slope and p-value of y vs x"""
-    mask = np.isfinite(y)
-    y_valid = y[mask]
-    x_valid = x[mask]
-
-    # Not enough valid points for regression
-    if len(y_valid) < 3:
-        return np.nan, np.nan
-
-    # All x are identical (no temporal span)
-    if np.all(x_valid == x_valid[0]):
-        return np.nan, np.nan
-
-    try:
-        res = linregress(x_valid, y_valid)
-        return res.slope, res.pvalue
-    except Exception:
-        # Catch any residual numerical corner cases
-        return np.nan, np.nan
-
-# Time in numeric form (e.g., year)
-time_num =data_NPP.time.dt.year.values #(
-    #data_NPP.time.dt.year
-    #+ (data_NPP.time.dt.month-0.5)/12
-#).values
-
-# Apply across lat-lon
-trend, pval = xr.apply_ufunc(
-    linear_trend,
-    data_NPP,
-    time_num,
-    input_core_dims=[["time"], ["time"]],
-    output_core_dims=[[], []],
-    vectorize=True,
-    dask="parallelized",
-    output_dtypes=[float, float]
-)
-
-trend_masked = trend.where(pval < 0.05)
-
-print('trend',trend)
-
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import numpy as np
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True)
-gl.top_labels = False
-gl.right_labels = False
-
-# Trend color levels
-levels = np.linspace(-15, 15, 40)
-
-# Filled contour: trend values (masked where not significant)
-fill = ax.contourf(
-    data_NPP.XC,
-    data_NPP.YC,
-    trend.squeeze(),
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    extend="both",
-    transform=ccrs.PlateCarree()
-)
-
-# Hatching for regions with *insignificant* trend (p >= 0.05)
-significant = (pval <= 0.05)
-ax.contourf(
-    data_NPP.XC,
-    data_NPP.YC,
-    significant.squeeze(),
-    levels=[0.5, 1.5],
-    hatches=["////"],
-    colors="none",
-    transform=ccrs.PlateCarree()
-)
-lon, lat = np.meshgrid(data_NPP.XC, data_NPP.YC)
-lon_sig = lon[significant]
-lat_sig = lat[significant]
-
-# Add small black dots
-sig = pval <= 0.05
-
-lon2d, lat2d = np.meshgrid(data_NPP.XC, data_NPP.YC)
-iy, ix = np.where(sig)
-
-ax.scatter(
-    lon2d[iy, ix],
-    lat2d[iy, ix],
-    s=3, color='black',
-    transform=ccrs.PlateCarree()
-)
-# Colorbar
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-cb.ax.tick_params(labelsize=16)
-cb.set_label('NPP Trend (mgC/m²/day²)', fontsize=18, labelpad=15)
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.3f'))
-
-# Save
-plt.savefig("NPP_trend_significance.pdf", bbox_inches='tight')
-
-
-
-mean_npp = data_NPP.mean(dim=['XC', 'YC'])
-
-# 3. Plot the time series (e.g. at a given depth level, or integrated)
-#    Here we’ll pick the surface depth (Z=0) as an example
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-
-fig = plt.figure(figsize=(12, 4), dpi=300)
-plt.plot(data_NPP.time, mean_npp, color='black', linewidth=2)
-plt.xlabel("Time", fontsize=18)
-plt.ylabel("NPP (mgC/m²/day)", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-plt.grid(True)
-plt.tight_layout()
-plt.savefig('Figure1b_mean_NPP_time_series.pdf', dpi=300)
-plt.show()
-
-
-
-
 print('data_NPP',data_NPP)
 
 time_mean_NPP_clim = data_NPP.groupby('time.month').mean(dim='time',skipna=True)
@@ -1624,167 +1284,122 @@ from matplotlib.ticker import ScalarFormatter
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-# EOF plot loop
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-9e-1, 9e-1, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized.XC),
-        np.array(eofs_normalized.YC),
-        np.array(eofs_normalized.isel(mode=0)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF NPP', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Figure3a_eof_NPP.pdf", bbox_inches='tight')
-plt.close()
-
-for i in range(1):
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-    # Add coastlines and gridlines
-    ax.coastlines(resolution='110m')
-    gl = ax.gridlines(draw_labels=True)
-    gl.top_labels = False
-    gl.right_labels = False
-
-    # Set contour levels
-    levels = np.linspace(-9e-1, 9e-1, 40)
-
-    # Contourf plot
-    fill = ax.contourf(
-        np.array(eofs_normalized.XC),
-        np.array(eofs_normalized.YC),
-        np.array(eofs_normalized.isel(mode=1)).squeeze(),
-        levels=levels,
-        cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-    )
-
-    ax.set_aspect('equal')
-
-    # Colorbar formatting
-    cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-    cb.ax.tick_params(labelsize=20)
-    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))  # Scientific with 1 decimal
-    cb.set_label('First EOF NPP', fontsize=20, labelpad=15)
-
-    # Final extent (redundant here, but safe)
-    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-# Save figure
-plt.savefig("Figure3c_eof_NPP_2.pdf", bbox_inches='tight')
-plt.close()
-
-
+import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import cartopy.crs as ccrs
 
+# ---------------------------------------------------------------
+# Compute trends/p-values for both PCs (your existing function)
+# ---------------------------------------------------------------
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import cartopy.crs as ccrs
+
+# ---------------------------------------------------------------
+# Compute trends/p-values for both PCs
+# ---------------------------------------------------------------
 pc1 = pcs_normalized.isel(mode=0)
+pc2 = pcs_normalized.isel(mode=1)
 
-slope, pval = pc_trend_rednoise(pc1.time.values, pc1.values)
+slope1, pval1 = pc_trend_rednoise(pc1.time.values, pc1.values)
+slope2, pval2 = pc_trend_rednoise(pc2.time.values, pc2.values)
 
-print("PC1 trend (per year):", slope)
-print("p-value:", pval)
+print("PC1 trend (per year):", slope1, "p =", pval1)
+print("PC2 trend (per year):", slope2, "p =", pval2)
 
-# Create a separate figure for PC1
-import matplotlib.ticker as ticker
+# ---------------------------------------------------------------
+# Build the 2x2 figure (mixed projections)
+# ---------------------------------------------------------------
+proj = ccrs.SouthPolarStereo(central_longitude=0)
 
-fig = plt.figure(figsize=(12,4), dpi=300)
+fig = plt.figure(figsize=(16, 12), dpi=300)
+gs = fig.add_gridspec(
+    2, 2,
+    width_ratios=[1.0, 1.4],
+    hspace=0.30,
+    wspace=0.20,
+    left=0.06, right=0.92, top=0.94, bottom=0.08,
+)
 
-plt.plot(pc1.time, pc1, color='black', linewidth=2, label="PC1")
+panel_letters = [['a', 'b'],
+                 ['c', 'd']]
 
-# build trend line
-#t = (pc1.time.values.astype('datetime64[M]') - pc1.time.values[0].astype('datetime64[M]')).astype(int)/12
-#trend_line = slope*t + (pc1.mean() - slope*t.mean())
+eof_levels = np.linspace(-9e-1, 9e-1, 40)
+eof_data   = [eofs_normalized.isel(mode=0), eofs_normalized.isel(mode=1)]
+eof_titles = ['First EOF NPP', 'Second EOF NPP']
 
-#plt.plot(pc1.time, trend_line, color='red', linewidth=2, label="Trend")
+pc_data    = [pc1, pc2]
+pc_titles  = ['First PC NPP', 'Second PC NPP']
+pc_slopes  = [slope1, slope2]
+pc_pvals   = [pval1, pval2]
 
-plt.ylabel("Principal Component 1", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
+# ---- Column 1: EOF maps ----
+for row in range(2):
+    ax = fig.add_subplot(gs[row, 0], projection=proj)
+    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='110m', linewidth=0.6)
+    gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
+    gl.top_labels = False
+    gl.right_labels = False
 
-# significance label
-label = f"Trend = {slope:.3f} yr$^{{-1}}$\np = {pval:.3f}"
-if pval < 0.05:
-    label += "  (significant)"
+    fill = ax.contourf(
+        np.array(eof_data[row].XC),
+        np.array(eof_data[row].YC),
+        np.array(eof_data[row]).squeeze(),
+        levels=eof_levels,
+        cmap=plt.cm.RdBu_r,
+        extend='both',
+        transform=ccrs.PlateCarree(),
+    )
+    ax.set_aspect('equal', adjustable='box')
 
-plt.text(0.02,0.95,label, transform=plt.gca().transAxes,
-         fontsize=14, verticalalignment='top',
-         bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+    # title above the panel
+    ax.set_title(eof_titles[row], fontsize=16)
 
-plt.legend()
-plt.tight_layout()
-plt.savefig("Figure3b_pc1_NPP_timeseries.pdf")
-plt.show()
+    # colorbar without a label (info now in the title)
+    cb = fig.colorbar(fill, ax=ax, orientation='vertical',
+                      shrink=0.75, pad=0.05)
+    cb.ax.tick_params(labelsize=14)
+    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1e'))
 
+    # panel letter
+    ax.text(0.02, 0.97, panel_letters[row][0],
+            transform=ax.transAxes,
+            fontsize=22, fontweight='bold',
+            va='top', ha='left', zorder=10)
 
-pc1 = pcs_normalized.isel(mode=1)
+# ---- Column 2: PC time series ----
+for row in range(2):
+    ax = fig.add_subplot(gs[row, 1])
 
-#slope, pval = pc_trend_rednoise(pc1.time.values, pc1.values)
+    ax.plot(pc_data[row].time, pc_data[row],
+            color='black', linewidth=2)
 
-print("PC1 trend (per year):", slope)
-print("p-value:", pval)
+    # title above the panel
+    ax.set_title(pc_titles[row], fontsize=16)
 
-# Create a separate figure for PC1
-import matplotlib.ticker as ticker
+    ax.set_ylabel(f'Principal Component {row + 1}', fontsize=15)
+    ax.set_xlabel('Time', fontsize=15)
+    ax.tick_params(axis='both', which='major', labelsize=13)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
+    ax.grid(True, alpha=0.3)
 
-fig = plt.figure(figsize=(12,4), dpi=300)
+    # trend / significance label
+    #label = f"Trend = {pc_slopes[row]:.3f} yr$^{{-1}}$\np = {pc_pvals[row]:.3f}"
+    #if pc_pvals[row] < 0.05:
+    #    label += "  (significant)"
+    ax.text(0.02, 0.95, panel_letters[row][1],
+            transform=ax.transAxes,
+            fontsize=22, fontweight='bold',
+            va='top', ha='left', zorder=10)
+    #        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-plt.plot(pc1.time, pc1, color='black', linewidth=2, label="PC1")
+    # panel letter
 
-# build trend line
-#t = (pc1.time.values.astype('datetime64[M]') - pc1.time.values[0].astype('datetime64[M]')).astype(int)/12
-#trend_line = slope*t + (pc1.mean() - slope*t.mean())
-
-#plt.plot(pc1.time, trend_line, color='red', linewidth=2, label="Trend")
-
-plt.ylabel("Principal Component 1", fontsize=18)
-plt.xlabel("Time", fontsize=18)
-plt.tick_params(axis='both', which='major', labelsize=18)
-plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-plt.grid(True)
-
-# significance label
-label = f"Trend = {slope:.3f} yr$^{{-1}}$\np = {pval:.3f}"
-if pval < 0.05:
-    label += "  (significant)"
-
-plt.text(0.02,0.95,label, transform=plt.gca().transAxes,
-         fontsize=14, verticalalignment='top',
-         bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
-
-plt.legend()
-plt.tight_layout()
-plt.savefig("Figure3d_pc1_NPP_timeseries_2.pdf")
+plt.savefig('Supplemental_Figure3_eof_pc_combined.pdf',
+            dpi=300, bbox_inches='tight')
 plt.show()
 
 
@@ -1802,7 +1417,7 @@ plt.title('Explained Variance by EOF Mode', fontsize=12)
 plt.xticks(np.arange(1, len(variance_array[:15])+1))
 plt.grid(True, linestyle='--', alpha=0.5)
 plt.tight_layout()
-#plt.savefig("variance_NPP.png")
+plt.savefig("Supplemental_Figure4_variance_NPP.png")
 
 
 
@@ -1881,425 +1496,130 @@ import cartopy.crs as ccrs
 import matplotlib.ticker as mticker
 import cartopy.feature as cfeature
 
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-cb.ax.tick_params(labelsize=18)
-#cb.set_label('Correlation (NPP vs THETA)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-font_size = 20  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-plt.savefig("Figure4c_correlation_NPP_THETA_rednoise.png", dpi=300)
-plt.show()
-
 from scipy import stats
 
-correlation_map = xr.corr(time_mean_MLD_anom2, time_mean_NPP_anom2, dim='time')
 
+
+
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import cartopy.crs as ccrs
+from tqdm import tqdm
+
+# ---------------------------------------------------------------
+# 1. Define the six (predictor, label) pairs in panel order
+# ---------------------------------------------------------------
+predictors = [
+    (time_mean_MLD_anom2,    'MLD'),
+    (time_mean_TRAC04_anom2, 'Fe'),
+    (time_mean_THETA_anom2,  r'$\theta$'),
+    (time_mean_TRAC06_anom2, r'NO$_3^-$'),
+    (time_mean_SIArea_anom2, 'Sea Ice Area'),
+    (time_mean_irris_anom2,  'Irradiance'),
+]
+
+panel_labels = ['a', 'b', 'c', 'd', 'e', 'f']
+
+# ---------------------------------------------------------------
+# 2. Compute correlation + significance for each predictor
+#    (skip this block if you've already cached the maps)
+# ---------------------------------------------------------------
 nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
 
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_MLD_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
+corr_maps = []
+sig_maps  = []
 
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+for predictor, label in predictors:
+    corr_map = np.full((nlat, nlon), np.nan)
+    sig_map  = np.full((nlat, nlon), np.nan)
 
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
+    for j in tqdm(range(nlat), desc=f'{label}'):
+        for i in range(nlon):
+            x = np.array(time_mean_NPP_anom2[:, j, i])
+            y = np.array(predictor[:, j, i])
+            if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
+                r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
+                corr_map[j, i] = r
+                if   abs(r) >= r99: sig_map[j, i] = 99
+                elif abs(r) >= r95: sig_map[j, i] = 95
+
+    corr_maps.append(corr_map)
+    sig_maps.append(sig_map)
+
+# ---------------------------------------------------------------
+# 3. Build the 2x3 figure
+# ---------------------------------------------------------------
+proj = ccrs.SouthPolarStereo(central_longitude=0)
+
+fig, axes = plt.subplots(
+    2, 3,
+    figsize=(15, 10),
+    dpi=300,
+    subplot_kw={'projection': proj},
+)
 
 levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
+lon = np.array(time_mean_NPP_anom2.XC)
+lat = np.array(time_mean_NPP_anom2.YC)
 
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
+fill = None  # will hold the last QuadContourSet for the shared colorbar
 
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-cb.ax.tick_params(labelsize=22)
-#cb.set_label('Correlation (NPP vs MLD)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
+for ax, corr_map, sig_map, (_, label), tag in zip(
+    axes.flat, corr_maps, sig_maps, predictors, panel_labels
+):
+    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='110m', linewidth=0.6)
+
+    gl = ax.gridlines(draw_labels=False, linewidth=0.3, color='gray', alpha=0.6)
+
+    fill = ax.contourf(
+        lon, lat, corr_map,
+        levels=levels,
+        cmap=plt.cm.RdBu_r,
+        extend='both',
+        transform=ccrs.PlateCarree(),
+    )
+
+    # significance hatching: 95% with '..', 99% with '//'
+    ax.contourf(
+        lon, lat, sig_map,
+        levels=[94, 98, 101],
+        colors='none',
+        hatches=['..','//'],
+        transform=ccrs.PlateCarree(),
+    )
+
+    # bold panel letter in top-left corner, inside the axes
+    ax.text(
+        0.02, 0.97, tag,
+        transform=ax.transAxes,
+        fontsize=18,
+        fontweight='bold',
+        va='top',
+        ha='left',
+        zorder=10,
+    )
+
+    # variable name as a regular title above the panel
+    ax.set_title(label, fontsize=16)
+    ax.set_aspect('equal', adjustable='box')
+# ---------------------------------------------------------------
+# 4. Shared colorbar
+# ---------------------------------------------------------------
+fig.subplots_adjust(left=0.04, right=0.90, top=0.95, bottom=0.05,
+                    wspace=0.08, hspace=0.12)
+
+cbar_ax = fig.add_axes([0.92, 0.15, 0.018, 0.7])
+cb = fig.colorbar(fill, cax=cbar_ax, orientation='vertical')
+cb.set_label('Correlation', fontsize=18)
+cb.ax.tick_params(labelsize=16)
 cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-plt.savefig("Figure4a_correlation_NPP_MLD_rednoise.png", dpi=300)
+
+plt.savefig('Figure3.pdf', dpi=300, bbox_inches='tight')
 plt.show()
 
-
-correlation_map = xr.corr(time_mean_SALT_anom2, time_mean_NPP_anom2, dim='time')
-
-nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
-
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_SALT_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
-
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-#cb.set_label('Correlation (NPP vs SALT)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-
-
-correlation_map = xr.corr(time_mean_SIArea_anom2, time_mean_NPP_anom2, dim='time')
-
-nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
-
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_SIArea_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-#cb.set_label('Correlation (NPP vs SIArea)', fontsize=18)
-cb.ax.tick_params(labelsize=22)
-ax.set_aspect('equal', adjustable='box')
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-plt.savefig("Figure4e_correlation_NPP_SIArea_rednoise.png", dpi=300)
-plt.show()
-
-
-correlation_map = xr.corr(time_mean_TRAC04_anom2, time_mean_NPP_anom2, dim='time')
-
-nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
-
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_TRAC04_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#cb.set_label('Correlation (NPP vs TRAC04)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-plt.savefig("Figure4b_correlation_NPP_TRAC04_rednoise.png", dpi=300)
-plt.show()
-
-
-correlation_map = xr.corr(time_mean_TRAC06_anom2, time_mean_NPP_anom2, dim='time')
-
-nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
-
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_TRAC06_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#cb.set_label('Correlation (NPP vs TRAC06)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-plt.savefig("Figure4d_correlation_NPP_TRAC06_rednoise.png", dpi=300)
-plt.show()
-
-correlation_map = xr.corr(time_mean_irris_anom2, time_mean_NPP_anom2, dim='time')
-
-nlat, nlon = time_mean_NPP_anom2.shape[1], time_mean_NPP_anom2.shape[2]
-corr_map = np.full((nlat, nlon), np.nan)
-sig_level_map = np.full((nlat, nlon), np.nan)
-
-for j in tqdm(range(nlat), desc="Latitude"):
-    for i in range(nlon):
-        x = np.array(time_mean_NPP_anom2[:, j, i])
-        y = np.array(time_mean_irris_anom2[:, j, i])
-        if np.isfinite(x).sum() > 20 and np.isfinite(y).sum() > 20:
-            r, (r90, r95, r99) = corr_rednoise_levels(x, y, nsim=500)
-            corr_map[j, i] = r
-            if abs(r) >= r99:
-                sig_level_map[j, i] = 99
-            elif abs(r) >= r95:
-                sig_level_map[j, i] = 95
-            #elif abs(r) >= r90:
-            #    sig_level_map[j, i] = 90
-
-fig = plt.figure(figsize=(10, 10), dpi=300)
-ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
-ax.coastlines(resolution='110m')
-gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.6)
-gl.top_labels = False
-gl.right_labels = False
-
-levels = np.linspace(-0.8, 0.8, 40)
-fill = ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    corr_map,
-    levels=levels,
-    cmap=plt.cm.RdBu_r,
-    transform=ccrs.PlateCarree()
-)
-
-# --- significance hatching ---
-ax.contourf(
-    np.array(correlation_map.XC),
-    np.array(correlation_map.YC),
-    sig_level_map,
-    levels=[89, 94, 99, 101],
-    colors='none',
-    hatches=['..', '//', '\\\\'],
-    transform=ccrs.PlateCarree()
-)
-
-cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-font_size = 22  # Adjust as appropriate.
-cb.ax.tick_params(labelsize=font_size)
-#emphasize = ax.contour(lon, lat, np.abs(no3_mean-no3_mean_atlas)  < 1, levels=[0.5], colors='black', linewidths=1.5, transform=ccrs.PlateCarree())
-cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-#cb.set_label('Correlation (NPP vs irris)', fontsize=18)
-ax.set_aspect('equal', adjustable='box')
-#ax.set_title('Correlation with Monte Carlo AR(1) Red-Noise Significance', fontsize=16)
-plt.tight_layout()
-plt.savefig("Figure4f_correlation_NPP_irris_rednoise.png", dpi=300)
-plt.show()
 
 
 #coarsen_factor=8
@@ -2546,7 +1866,7 @@ time_mean_ratio_anom = Ratio.groupby('time.month')-time_mean_ratio_clim
 time_mean_ratio_anom=detrend_dim(time_mean_ratio_anom,dim='time')
 time_mean_ratio_anom=time_mean_ratio_anom.coarsen(YC=16, boundary="pad").mean()
 time_mean_ratio_anom=time_mean_ratio_anom.coarsen(XC=16, boundary="pad").mean()
-time_mean_ratio_anom2=time_mean_ratio_anom/time_mean_ratio_anom.std('time')
+time_mean_ratio_anom2=time_mean_ratio_anom/time_mean_ratio_anom.std()
 
 correlation_map = xr.corr(time_mean_ratio_anom2, time_mean_NPP_anom2, dim='time')
 
