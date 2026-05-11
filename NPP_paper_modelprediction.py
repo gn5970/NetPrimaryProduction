@@ -1708,14 +1708,14 @@ for k in range(1):
   ngrids = nlat * nlon
 
   # Create a full skill matrix with NaNs
-  full_skills = np.full((max_lead_time, ngrids), np.nan)
+  full_skills_mlr = np.full((max_lead_time, ngrids), np.nan)
 
   # skills_matrix should be shape (12, n_valid_targets)
   # valid_targets should be shape (4995,)
-  full_skills[:, valid_targets] = skills_matrix.reshape(20,37*135)
+  full_skills_mlr[:, valid_targets] = skills_matrix.reshape(20,37*135)
 
   # Reshape to (nlat, nlon, lead_time)
-  full_skills = full_skills.reshape((max_lead_time, nlat, nlon)).transpose(1, 2, 0)
+  full_skills_mlr = full_skills_mlr.reshape((max_lead_time, nlat, nlon)).transpose(1, 2, 0)
 
   for i in range(1, max_lead_time + 1,6):  # for lag = 1, 7
       fig = plt.figure(figsize=(10, 10), dpi=300)
@@ -1735,7 +1735,7 @@ for k in range(1):
       fill = ax.contourf(
         lon2d,
         lat2d,
-        full_skills[:, :, i],
+        full_skills_mlr[:, :, i],
         levels=levels,
         cmap=plt.cm.RdBu_r,
         transform=ccrs.PlateCarree()
@@ -1840,7 +1840,7 @@ for k in range(1):
   skills_matrix_total = np.zeros((max_lead_time, n_targets))
   skills_matrix_total_rmse = np.zeros((max_lead_time, n_targets))
   residual_matrix2=[]
-  
+  timeseries_store = {} 
   for lead_time in range(1, max_lead_time + 1):
     print(f"🔁 Processing lead time {lead_time}...")
 
@@ -1885,27 +1885,30 @@ for k in range(1):
     true_mean = np.nanmean(y_test, axis=1)
     pred_std = np.nanstd(y_pred, axis=1)
     true_std = np.nanstd(y_test, axis=1)
-    fig, ax = plt.subplots(figsize=(5, 3.5))
+    time_axis = time1[-y_pred.shape[0]:]
+    timeseries_store[lead_time] = (time_axis, pred_mean, true_mean, pred_std)
 
-    ax.plot(time1[-y_pred.shape[0]:],pred_mean, color='tab:blue', linewidth=2)
-    ax.plot(time1[-y_pred.shape[0]:],true_mean, color='tab:orange', linestyle='--', linewidth=2)
-    ax.fill_between(
-    time1[-y_pred.shape[0]:],
-    pred_mean - pred_std,
-    pred_mean + pred_std,
-    color="tab:blue",
-    alpha=0.2,
-    )
+    #fig, ax = plt.subplots(figsize=(5, 3.5))
+
+    #ax.plot(time1[-y_pred.shape[0]:],pred_mean, color='tab:blue', linewidth=2)
+    #ax.plot(time1[-y_pred.shape[0]:],true_mean, color='tab:orange', linestyle='--', linewidth=2)
+    #ax.fill_between(
+    #time1[-y_pred.shape[0]:],
+    #pred_mean - pred_std,
+    #pred_mean + pred_std,
+    #color="tab:blue",
+    #alpha=0.2,
+    #)
     #ax.set_title(f"Mean NPP prediction")
-    ax.set_xlabel("Time", fontsize=12)
-    ax.set_ylabel("NPP anomalies", fontsize=12)
-    ax.set_ylim(-0.75, 0.75)
-    ax.grid(alpha=0.2)
-    ax.tick_params(axis='x', labelrotation=45, labelsize=12)
+    #ax.set_xlabel("Time", fontsize=12)
+    #ax.set_ylabel("NPP anomalies", fontsize=12)
+    #ax.set_ylim(-0.75, 0.75)
+    #ax.grid(alpha=0.2)
+    #ax.tick_params(axis='x', labelrotation=45, labelsize=12)
     #ax.legend(frameon=False, loc="upper left")
-    plt.tight_layout()
-    fname = f"Figure7_d_e_f_kernel_regression_timeseries_{lead_time}.pdf"
-    plt.savefig(fname, dpi=300)
+    #plt.tight_layout()
+    #fname = f"Figure7_d_e_f_kernel_regression_timeseries_{lead_time}.pdf"
+    #plt.savefig(fname, dpi=300)
 
   #significances2=np.array(significances)
   residual_matrix2=np.array(residual_matrix2)
@@ -1921,14 +1924,14 @@ for k in range(1):
   ngrids = nlat * nlon
 
   # Create a full skill matrix with NaNs
-  full_skills = np.full((max_lead_time, ngrids), np.nan)
+  full_skills_krr = np.full((max_lead_time, ngrids), np.nan)
 
   # skills_matrix should be shape (12, n_valid_targets)
   # valid_targets should be shape (4995,)
-  full_skills[:, valid_targets] = skills_matrix_total.reshape(20,37*135)
+  full_skills_krr[:, valid_targets] = skills_matrix_total.reshape(20,37*135)
 
   # Reshape to (nlat, nlon, lead_time)
-  full_skills = full_skills.reshape((max_lead_time, nlat, nlon)).transpose(1, 2, 0)
+  full_skills_krr = full_skills_krr.reshape((max_lead_time, nlat, nlon)).transpose(1, 2, 0)
   
   for i in range(1,20,6):  # for lag = 1, 7
       fig = plt.figure(figsize=(10, 10), dpi=300)
@@ -1948,7 +1951,7 @@ for k in range(1):
       fill = ax.contourf(
         lon2d,
         lat2d,
-        full_skills[:, :, i],
+        full_skills_krr[:, :, i],
         levels=levels,
         cmap=plt.cm.RdBu_r,
         transform=ccrs.PlateCarree()
@@ -1958,7 +1961,7 @@ for k in range(1):
       cb.ax.tick_params(labelsize=14)
       cb.set_label('Correlation', fontsize=16)
       cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-      plt.savefig("Figure6_c_f_i_kernel_regression_"+str(i)+"_"+str(B[k])+".png")
+      #plt.savefig("Figure6_c_f_i_kernel_regression_"+str(i)+"_"+str(B[k])+".png")
       
   full_skills_rmse = np.full((max_lead_time, ngrids), np.nan)
 
@@ -2012,35 +2015,213 @@ for k in range(1):
 
   # Reshape to (nlat, nlon, lead_time)
   full_residual =  full_residual.reshape((max_lead_time, nlat, nlon)).transpose(1, 2, 0)
-  for i in range(1,20,6):  # for lag = 1, 7
-      fig = plt.figure(figsize=(10, 10), dpi=300)
-      ax = plt.subplot(1, 1, 1, projection=ccrs.SouthPolarStereo(central_longitude=0))
-      ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+  
 
-      ax.coastlines(resolution='110m')
-      gl = ax.gridlines(draw_labels=True)
-      gl.top_labels = False
-      gl.right_labels = False
+# ---------------------------------------------------------------
+# Build the 2x3 figure: residual maps on top, time series below
+# ---------------------------------------------------------------
+lead_times_to_plot = [1, 7, 19]
 
-      levels = np.linspace(-1.2, 1.2, 40)
-      lon = lon1.squeeze()
-      lat = lat1.squeeze()
-      lon2d, lat2d = np.meshgrid(lon, lat)
+proj = ccrs.SouthPolarStereo(central_longitude=0)
 
-      fill = ax.contourf(
-        lon2d,
-        lat2d,
-        full_residual[:, :, i],
+fig = plt.figure(figsize=(15, 10), dpi=300)
+gs = fig.add_gridspec(2, 3,
+                      height_ratios=[1.2, 1.0],
+                      hspace=0.40,           # extra room for bottom-row titles + legend
+                      wspace=0.10,
+                      left=0.06, right=0.90, top=0.95, bottom=0.10)
+
+panel_letters_top    = ['a', 'b', 'c']
+panel_letters_bottom = ['d', 'e', 'f']
+
+lon = lon1.squeeze()
+lat = lat1.squeeze()
+lon2d, lat2d = np.meshgrid(lon, lat)
+
+levels = np.linspace(-1.2, 1.2, 40)
+fill = None
+
+# ---- TOP ROW: residual maps ----
+for col, lt in enumerate(lead_times_to_plot):
+    ax = fig.add_subplot(gs[0, col], projection=proj)
+
+    ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='110m', linewidth=0.6)
+    ax.gridlines(draw_labels=False, linewidth=0.3, color='gray', alpha=0.6)
+
+    fill = ax.contourf(
+        lon2d, lat2d,
+        full_residual[:, :, lt - 1],
         levels=levels,
         cmap=plt.cm.RdBu_r,
-        transform=ccrs.PlateCarree()
-      )
+        extend='both',
+        transform=ccrs.PlateCarree(),
+    )
 
-      cb = plt.colorbar(fill, orientation='vertical', shrink=0.8)
-      cb.ax.tick_params(labelsize=20)
-      cb.set_label('Error', fontsize=20)
-      cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
-      plt.savefig("Figure7_a_b_c_kernel_regression_residual_"+str(i)+"_"+str(B[k])+".png")
-   
+    ax.text(0.02, 0.97, panel_letters_top[col],
+            transform=ax.transAxes,
+            fontsize=20, fontweight='bold',
+            va='top', ha='left', zorder=10)
+
+    ax.set_title(f'{lt}-month lead', fontsize=16)
+    ax.set_aspect('equal', adjustable='box')
+
+# shared colorbar for the top row
+cbar_ax = fig.add_axes([0.92, 0.55, 0.018, 0.38])
+cb = fig.colorbar(fill, cax=cbar_ax, orientation='vertical')
+cb.set_label('Error (NPP anomaly)', fontsize=14)
+cb.ax.tick_params(labelsize=12)
+cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
+
+# ---- BOTTOM ROW: time series ----
+last_ax = None  # we'll grab handles from this for the figure-level legend
+
+for col, lt in enumerate(lead_times_to_plot):
+    ax = fig.add_subplot(gs[1, col])
+    last_ax = ax
+
+    time_axis, pred_mean, true_mean, pred_std = timeseries_store[lt]
+
+    ax.plot(time_axis, pred_mean, color='tab:blue', linewidth=2, label='Prediction')
+    ax.plot(time_axis, true_mean, color='tab:orange', linestyle='--',
+            linewidth=2, label='Truth')
+    ax.fill_between(
+        time_axis,
+        pred_mean - pred_std,
+        pred_mean + pred_std,
+        color='tab:blue', alpha=0.2,
+    )
+
+    ax.set_title(f'Prediction vs testing data at {lt}-month lead', fontsize=13)
+
+    ax.set_xlabel('Time', fontsize=12)
+
+    # y-axis: bigger label and tick labels on the leftmost panel only
+    if col == 0:
+        ax.set_ylabel('NPP anomalies', fontsize=15)
+        ax.tick_params(axis='y', labelsize=13)
+    else:
+        ax.tick_params(axis='y', labelleft=False)   # hide y-tick numbers
+
+    ax.set_ylim(-0.75, 0.75)
+    ax.grid(alpha=0.2)
+    ax.tick_params(axis='x', labelrotation=45, labelsize=10)
+
+    ax.text(0.02, 0.97, panel_letters_bottom[col],
+            transform=ax.transAxes,
+            fontsize=20, fontweight='bold',
+            va='top', ha='left', zorder=10)
+
+# ---- Figure-level legend in the gap between the two rows ----
+handles, labels = last_ax.get_legend_handles_labels()
+fig.legend(
+    handles, labels,
+    loc='center',
+    bbox_to_anchor=(0.5, 0.50),
+    ncol=2,
+    frameon=False,
+    fontsize=12,
+)
+
+plt.savefig('Figure6.pdf', dpi=300, bbox_inches='tight')
+plt.show()
 
 
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import cartopy.crs as ccrs
+
+# ---------------------------------------------------------------
+# Inputs — adjust these three names to match your actual variables
+# ---------------------------------------------------------------
+skill_layers = {
+    'Persistence':             persistence,
+    'Linear Regression':       full_skills_mlr,
+    'Kernel Ridge Regression': full_skills_krr,
+}
+
+lead_times = [1, 7, 19]    # row lead times (months) — adjust per indexing convention
+
+# ---------------------------------------------------------------
+# Coordinates
+# ---------------------------------------------------------------
+lon = lon1.squeeze()
+lat = lat1.squeeze()
+lon2d, lat2d = np.meshgrid(lon, lat)
+
+# ---------------------------------------------------------------
+# Build the 3x3 figure (transposed: methods = columns, leads = rows)
+# ---------------------------------------------------------------
+proj = ccrs.SouthPolarStereo(central_longitude=0)
+
+fig, axes = plt.subplots(
+    3, 3,
+    figsize=(15, 15),
+    dpi=300,
+    subplot_kw={'projection': proj},
+)
+
+levels = np.linspace(-1, 1, 40)
+panel_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+
+fill = None
+
+for row, lt in enumerate(lead_times):
+    for col, (method_name, skill_field) in enumerate(skill_layers.items()):
+
+        ax = axes[row, col]
+        idx = row * 3 + col
+        tag = panel_letters[idx]
+
+        ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+        ax.coastlines(resolution='110m', linewidth=0.6)
+        ax.gridlines(draw_labels=False, linewidth=0.3, color='gray', alpha=0.6)
+
+        fill = ax.contourf(
+            lon2d, lat2d,
+            skill_field[:, :, lt],
+            levels=levels,
+            cmap=plt.cm.RdBu_r,
+            extend='both',
+            transform=ccrs.PlateCarree(),
+        )
+
+        # bold panel letter top-left
+        ax.text(
+            0.02, 0.97, tag,
+            transform=ax.transAxes,
+            fontsize=20, fontweight='bold',
+            va='top', ha='left', zorder=10,
+        )
+
+        # column titles only on the top row (method name)
+        if row == 0:
+            ax.set_title(method_name, fontsize=16)
+
+        # row labels on the leftmost column (lead time)
+        if col == 0:
+            ax.text(
+                -0.08, 0.5, f'{lt}-month lead',
+                transform=ax.transAxes,
+                fontsize=16, fontweight='bold',
+                va='center', ha='center',
+                rotation=90,
+            )
+
+        ax.set_aspect('equal', adjustable='box')
+
+# ---------------------------------------------------------------
+# Shared colorbar on the right
+# ---------------------------------------------------------------
+fig.subplots_adjust(left=0.06, right=0.90, top=0.95, bottom=0.05,
+                    wspace=0.08, hspace=0.10)
+
+cbar_ax = fig.add_axes([0.92, 0.15, 0.018, 0.7])
+cb = fig.colorbar(fill, cax=cbar_ax, orientation='vertical')
+cb.set_label('Correlation skill', fontsize=18)
+cb.ax.tick_params(labelsize=16)
+cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
+
+plt.savefig('Figure5.pdf', dpi=300, bbox_inches='tight')
+plt.show()
