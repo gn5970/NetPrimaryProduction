@@ -18,7 +18,7 @@ import os
 from eofs.xarray import Eof
 # Extract variables X and y
 from sklearn.metrics import mean_squared_error
-
+from matplotlib.ticker import FormatStrFormatter
 import h5py
 import xarray as xr
 import numpy as np
@@ -2460,101 +2460,219 @@ def plot_diff_map(name, diff_map, sig_mask, latitudes, longitudes,
     plt.close()
     print(f"[Saved] {save_path}")
 
-def run_bootstrap_for_lists(
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import cartopy.crs as ccrs
+
+
+
+def run_bootstrap_combined_figure(
     full_list,
     subset_list,
     latitudes,
     longitudes,
-    leads_to_test=[0,1,2,3,4,5,6, 7,8,9,10,11,12,13,14,15,16,17,18,19],
-    save_folder="bootstrap_output"
+    case_labels,
+    lead_for_maps=0,                    # index of the lead time to plot in row 1 (0 = 1-month)
+    leads_to_test=list(range(20)),
+    fname="Figure7.pdf",
 ):
-    os.makedirs(save_folder, exist_ok=True)
-
+    """
+    Builds a 3x3 figure (saved to the current working directory):
+      Row 1: Δ-skill maps for each of 3 sensitivity categories at lead_for_maps.
+             Category name as panel title; lead-time qualifier as a rotated
+             row label on the leftmost panel only.
+      Row 2: mean Δ-skill vs lead time, one line plot per category, shared y-axis.
+             Y-tick numbers on the leftmost panel only.
+      Row 3: std  Δ-skill vs lead time, one line plot per category, shared y-axis.
+             Y-tick numbers on the leftmost panel only.
+    """
     n_cases = len(subset_list)
-    print(f"\n📌 Running bootstrap for {n_cases} sensitivity cases")
+    assert n_cases == 3, "This figure assumes exactly 3 sensitivity categories."
+
+    # ------------------------------------------------------------------
+    # 1. Pre-compute everything we need before plotting
+    # ------------------------------------------------------------------
+    diff_maps_for_row1 = []
+    sig_masks_for_row1 = []
+    mean_curves = []
+    std_curves  = []
 
     for idx in range(n_cases):
+        full_map   = np.array(full_list[idx])
+        subset_map = np.array(subset_list[idx])
 
-        full_map   = np.array(full_list[idx])      # (nlat, nlon, lead)
-        subset_map = np.array(subset_list[idx])    # (nlat, nlon, lead)
+        means = []
+        stds  = []
 
-        case_name = f"Case_{idx+1}"
-        print(f"\n=== Running bootstrap for {case_name} ===")
-        mean1=[]
-        std1=[]
         for lead in leads_to_test:
-
             full_lead   = full_map[:, :, lead]
             subset_lead = subset_map[:, :, lead]
 
             diff_map, sig_mask = bootstrap_skill_significance(
                 full_lead, subset_lead, n_boot=1000
             )
-            valid = ~np.isnan(diff_map)
-            mean_diff = np.nanmean(diff_map)
-            std_diff  = np.nanstd(diff_map)
-            n_sig     = np.sum(sig_mask & valid)
-            n_total   = np.sum(valid)
-            perc_sig  = 100 * n_sig / n_total
 
-            print(f"    Lead {lead+1} results:")
-            print(f"  • Mean skill difference (full - subset): {mean_diff:.4f}")
-            print(f"  • Std of difference: {std_diff:.4f}")
-            print(f"  • Significant grid points: {n_sig} / {n_total} "
-                  f"({perc_sig:.2f}%)")
+            means.append(np.nanmean(diff_map))
+            stds.append(np.nanstd(diff_map))
 
-            plot_diff_map(
-                name=case_name,
-                diff_map=diff_map,
-                sig_mask=sig_mask,
-                latitudes=latitudes,
-                longitudes=longitudes,
-                lead_idx=lead,
-                save_folder=save_folder
-            )
-            mean1.append(mean_diff)
-            std1.append(std_diff)
-        leads_axis = np.arange(len(leads_to_test))
+            if lead == lead_for_maps:
+                diff_maps_for_row1.append(diff_map)
+                sig_masks_for_row1.append(sig_mask)
 
-        # ======= Plot Mean Skill Difference Across Leads =======
-        plt.figure(figsize=(10, 5))
-        plt.plot(leads_axis, mean1, marker='o', color='steelblue')
-        plt.xlabel("Lead Time", fontsize=16)
-        plt.ylabel("Mean Skill Difference", fontsize=16)
-        plt.xticks(fontsize=18)
-        plt.yticks(fontsize=18)
-        #plt.title(f"{case_name}: Mean Skill Difference Across Leads", fontsize=16)
-        plt.grid(True, linestyle="--", alpha=0.5)
-        std_path = os.path.join(
-        save_folder, f"Figure8_d_e_f_{case_name}_mean_diff_skill_vs_lead.png"
+        mean_curves.append(np.array(means))
+        std_curves.append(np.array(stds))
+
+        print(f"[{case_labels[idx]}] computed across {len(leads_to_test)} lead times")
+
+    # ------------------------------------------------------------------
+    # 2. Common y-axis ranges for the line plots
+    # ------------------------------------------------------------------
+    all_means = np.concatenate(mean_curves)
+    all_stds  = np.concatenate(std_curves)
+
+    mean_pad = 0.05 * (np.nanmax(all_means) - np.nanmin(all_means) + 1e-9)
+    std_pad  = 0.05 * (np.nanmax(all_stds)  - np.nanmin(all_stds)  + 1e-9)
+
+    mean_ylim = (np.nanmin(all_means) - mean_pad, np.nanmax(all_means) + mean_pad)
+    std_ylim  = (np.nanmin(all_stds)  - std_pad,  np.nanmax(all_stds)  + std_pad)
+
+    # ------------------------------------------------------------------
+    # 3. Build the 3x3 figure
+    # ------------------------------------------------------------------
+    proj = ccrs.SouthPolarStereo(central_longitude=0)
+    fig = plt.figure(figsize=(16, 16), dpi=300)
+
+    gs = fig.add_gridspec(
+        3, 3,
+        height_ratios=[1.4, 1.0, 1.0],
+        hspace=0.35,
+        wspace=0.20,
+        left=0.10, right=0.90, top=0.96, bottom=0.06,    # left bumped to make room for row label
+    )
+
+    panel_letters = [
+        ['a', 'b', 'c'],
+        ['d', 'e', 'f'],
+        ['g', 'h', 'i'],
+    ]
+
+    lon2d, lat2d = np.meshgrid(np.array(longitudes).squeeze(),
+                               np.array(latitudes).squeeze())
+    levels = np.linspace(-0.55, 0.55, 40)
+    leads_axis = np.array(leads_to_test) + 1   # 1-indexed lead time for plotting
+    fill = None
+
+    # ---- ROW 1: Δ-skill maps ----
+    for col in range(n_cases):
+        ax = fig.add_subplot(gs[0, col], projection=proj)
+        ax.set_extent([-180, 180, -90, -30], crs=ccrs.PlateCarree())
+        ax.coastlines(resolution='110m', linewidth=0.6)
+        ax.gridlines(draw_labels=False, linewidth=0.3, color='gray', alpha=0.6)
+
+        fill = ax.contourf(
+            lon2d, lat2d,
+            diff_maps_for_row1[col],
+            levels=levels,
+            cmap=plt.cm.RdBu_r,
+            extend='both',
+            transform=ccrs.PlateCarree(),
         )
-        plt.savefig(std_path, dpi=200, bbox_inches="tight")
-            
-        plt.figure(figsize=(10, 5))
-        plt.plot(leads_axis, std1, marker='o', color='steelblue')
-        plt.xlabel("Lead Time", fontsize=16)
-        plt.ylabel("Std Skill Difference", fontsize=16)
-        plt.xticks(fontsize=18)
-        plt.yticks(fontsize=18)
-        #plt.title(f"{case_name}: Mean Skill Difference Across Leads", fontsize=16)
-        plt.grid(True, linestyle="--", alpha=0.5)
-        std_path = os.path.join(
-        save_folder, f"Figure_8_g_h_i_{case_name}_std_diff_skill_vs_lead.png"
-        )
-        plt.savefig(std_path, dpi=200, bbox_inches="tight")
+
+        # column title: category name only (no lead-time qualifier)
+        ax.set_title(case_labels[col], fontsize=15)
+
+        # rotated row label on leftmost panel: lead-time qualifier
+        if col == 0:
+            ax.text(-0.15, 0.5,
+                    f'Δ skill at {lead_for_maps + 1}-month lead',
+                    transform=ax.transAxes,
+                    fontsize=14, fontweight='bold',
+                    va='center', ha='center',
+                    rotation=90)
+
+        ax.text(0.02, 0.97, panel_letters[0][col],
+                transform=ax.transAxes,
+                fontsize=20, fontweight='bold',
+                va='top', ha='left', zorder=10)
+        ax.set_aspect('equal', adjustable='box')
+
+    # shared colorbar for the map row
+    cbar_ax = fig.add_axes([0.92, 0.68, 0.018, 0.25])
+    cb = fig.colorbar(fill, cax=cbar_ax, orientation='vertical')
+    cb.set_label('Δ skill (full − subset)', fontsize=14)
+    cb.ax.tick_params(labelsize=14)
+    cb.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+
+    # ---- ROW 2: mean Δ-skill vs lead time ----
+    for col in range(n_cases):
+        ax = fig.add_subplot(gs[1, col])
+        ax.plot(leads_axis, mean_curves[col],
+                marker='o', color='steelblue', linewidth=2)
+        ax.set_xlabel('Lead time (months)', fontsize=14)
+        ax.set_ylim(mean_ylim)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.tick_params(axis='x', labelsize=14)
+
+        if col == 0:
+            ax.set_ylabel('Mean Δ skill', fontsize=15)
+            ax.tick_params(axis='y', labelsize=14)
+            ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+        else:
+            ax.tick_params(axis='y', labelleft=False)
+
+        ax.text(0.02, 0.97, panel_letters[1][col],
+                transform=ax.transAxes,
+                fontsize=20, fontweight='bold',
+                va='top', ha='left', zorder=10)
+
+    # ---- ROW 3: std Δ-skill vs lead time ----
+    for col in range(n_cases):
+        ax = fig.add_subplot(gs[2, col])
+        ax.plot(leads_axis, std_curves[col],
+                marker='o', color='darkorange', linewidth=2)
+        ax.set_xlabel('Lead time (months)', fontsize=14)
+        ax.set_ylim(std_ylim)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.tick_params(axis='x', labelsize=14)
+
+        if col == 0:
+            ax.set_ylabel('Std Δ skill', fontsize=15)
+            ax.tick_params(axis='y', labelsize=14)
+            ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+        else:
+            ax.tick_params(axis='y', labelleft=False)
+
+        ax.text(0.02, 0.97, panel_letters[2][col],
+                transform=ax.transAxes,
+                fontsize=20, fontweight='bold',
+                va='top', ha='left', zorder=10)
+
+    plt.savefig(fname, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"[Saved] {fname}")
 
 
+# ------------------------------------------------------------------
+# Run it
+# ------------------------------------------------------------------
+case_labels = [
+    'Ocean Dynamics',
+    'Biogeochemestry (NO$_3^-$ & Fe)',
+    'Atmospheric Forcing (Irradiance & WSC)',
+]
 
-run_bootstrap_for_lists(
+run_bootstrap_combined_figure(
     full_list=full_skills_sensitivity_list_total,
     subset_list=full_skills_sensitivity_list,
     latitudes=lat1,
     longitudes=lon1,
-    leads_to_test=[0,1,2,3,4,5,6, 7,8,9,10,11,12,13,14,15,16,17,18,19],
-    save_folder="bootstrap_results_SO"
+    case_labels=case_labels,
+    lead_for_maps=0,
+    leads_to_test=list(range(20)),
+    fname="Figure7.pdf",
 )
-
-
 
 
 
@@ -2590,60 +2708,116 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 1) build your flat masks once:
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ---------------------------------------------------------------
+# Build sector masks (unchanged)
+# ---------------------------------------------------------------
 def lon_mask(lon, lonmin, lonmax):
     if lonmin < lonmax:
         return (lon >= lonmin) & (lon < lonmax)
     else:
-        # wrap case
-        return (lon >= lonmin) | (lon < lonmax)
-    
-# 1) build your flat masks once:
-def lon_mask(lon, lonmin, lonmax):
-    if lonmin < lonmax:
-        return (lon >= lonmin) & (lon < lonmax)
-    else:
-        # wrap case
         return (lon >= lonmin) | (lon < lonmax)
 
 sector_masks_flat = {}
 for name, sd in sector_defs.items():
     m_lon = lon_mask(lon_flat, sd["lonmin"], sd["lonmax"])
-    m_lat = (lat_flat <= -30)          # or <= -50 if you prefer
-    sector_masks_flat[name] = m_lon & m_lat   # 1D boolean array
+    m_lat = (lat_flat <= -30)
+    sector_masks_flat[name] = m_lon & m_lat
 
 sensitivity_labels = [
-    "Ocean-only model",
-    "Nutrient-only model",
-    "Light-related model"
+    "Ocean Dynamics",
+    "Biogeochemistry",
+    "Atmospheric forcing",
 ]
 
-
+# ---------------------------------------------------------------
+# Build the 2x3 figure: one panel per basin
+# ---------------------------------------------------------------
 leads = np.arange(1, max_lead_time + 1)
 
-for basin, mask in sector_masks_flat.items():
-    fig, ax = plt.subplots(figsize=(6, 4))
+basin_names = list(sector_masks_flat.keys())
+n_basins = len(basin_names)
 
-    # Plot each sensitivity separately
+# Sanity check — assumes 6 basins; adapt nrows/ncols if you have fewer/more
+nrows, ncols = 2, 3
+panel_letters = ['a', 'b', 'c', 'd', 'e', 'f']
+
+fig, axes = plt.subplots(
+    nrows, ncols,
+    figsize=(15, 9),
+    dpi=300,
+    sharex=True,
+    sharey=True,           # shared y so all panels are directly comparable
+)
+axes_flat = axes.flatten()
+
+last_ax = None
+sens_colors = ['tab:blue', 'tab:orange', 'tab:green']  # one per sensitivity
+
+for idx, basin in enumerate(basin_names):
+    ax = axes_flat[idx]
+    last_ax = ax
+    mask = sector_masks_flat[basin]
+
+    # sensitivity curves
     for k, full_sens in enumerate(full_skills_sensitivity_list):
         flat = full_sens.reshape(nlat * nlon, max_lead_time).T
         skill_sens = np.nanmean(flat[:, mask], axis=1)
-        ax.plot(leads, skill_sens, linestyle="--", marker="s", label=sensitivity_labels[k])
+        ax.plot(leads, skill_sens,
+                linestyle='--', marker='s',
+                color=sens_colors[k],
+                label=sensitivity_labels[k])
 
-    # Plot total ONLY once
+    # total (full) model
     flat_total = full_skills_total.reshape(nlat * nlon, max_lead_time).T
     skill_total = np.nanmean(flat_total[:, mask], axis=1)
-    ax.plot(leads, skill_total, linestyle='-', marker='s', color='brown', label="Total")
+    ax.plot(leads, skill_total,
+            linestyle='-', marker='s',
+            color='brown',
+            label='Total')
 
-    ax.set_xlabel("Lead time (months)", fontsize=16)
-    ax.set_ylabel("Mean correlation", fontsize=16)
-    ax.tick_params(axis='both', which='major', labelsize=18)
+    # region as title
+    ax.set_title(basin, fontsize=14)
+
+    # bold panel letter top-left, inside the axes
+    ax.text(0.02, 0.97, panel_letters[idx],
+            transform=ax.transAxes,
+            fontsize=18, fontweight='bold',
+            va='top', ha='left', zorder=10)
+
     ax.set_ylim(0.1, 0.65)
     ax.grid(alpha=0.3)
-    ax.legend(frameon=False, fontsize=8)
-    plt.tight_layout()
-    plt.savefig(f"Figure9_kernel_regression_sensitivity_{basin.replace(' ', '_')}.png", dpi=300)
-    plt.show()
+    ax.tick_params(axis='both', which='major', labelsize=12)
 
+# hide any unused panels (in case n_basins < nrows*ncols)
+for idx in range(n_basins, nrows * ncols):
+    axes_flat[idx].set_visible(False)
+
+# axis labels only on outer panels (since sharex/sharey)
+for ax in axes[-1, :]:
+    ax.set_xlabel("Lead time (months)", fontsize=13)
+for ax in axes[:, 0]:
+    ax.set_ylabel("Mean correlation", fontsize=13)
+
+# ---------------------------------------------------------------
+# Single figure-level legend at the bottom
+# ---------------------------------------------------------------
+handles, labels = last_ax.get_legend_handles_labels()
+fig.legend(
+    handles, labels,
+    loc='lower center',
+    bbox_to_anchor=(0.5, -0.02),
+    ncol=4,
+    frameon=False,
+    fontsize=12,
+)
+
+plt.tight_layout(rect=[0, 0.04, 1, 1])  # leave room for legend at bottom
+plt.savefig("Figure8.pdf",
+            dpi=300, bbox_inches='tight')
+plt.show()
 
 
 ##### meridional mean
