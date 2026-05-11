@@ -1238,6 +1238,35 @@ time_mean_NO3_Fe_ratio_anom2=time_mean_NO3_Fe_ratio_anom/time_mean_NO3_Fe_ratio_
 
 
 print('data_NPP',data_NPP)
+data = xr.open_dataset("/projects/CDEUTSCH/DATA/NPP_bsoseI155_2013to2023_monthly.h5", engine="h5netcdf")
+
+seconds_per_year =12.011*1000*86400
+
+#data = data.coarsen(YC=16, boundary="pad").mean()
+#data = data.coarsen(XC=16, boundary="pad").mean()
+#data = data #* seconds_per_year  # Now in molC/m³/year
+npp = data.BLGNPP*seconds_per_year  # Assuming this is the variable name
+
+
+
+# Step 2: Mask top 100 m
+Z_top = data.Z.where(npp.Z >= -100, drop=True)
+data = data.sel(Z=Z_top)
+
+drF = data.drF  # (Z), vertical cell thickness in m
+hFacC = data.hFacC  # (Z, YC, XC), vertical fraction of wet cell
+rA = data.rA
+
+# Step 3: Align shapes for multiplication
+drF_top = drF.sel(Z=Z_top)
+hFacC_top = hFacC.sel(Z=Z_top)
+
+# Step 4: Broadcast to match NPP shape
+#drF_exp = drF_top.broadcast_like(npp)
+#hFacC_exp = hFacC_top.broadcast_like(npp)
+
+# Step 5: Compute the volume-weighted NPP (mol C / m² / year)
+data_NPP = (npp * drF_top * hFacC_top).sum(dim="Z") # [mol C / m² / yr]
 
 time_mean_NPP_clim = data_NPP.groupby('time.month').mean(dim='time',skipna=True)
 time_mean_NPP_anom = data_NPP.groupby('time.month')-time_mean_NPP_clim
@@ -1417,7 +1446,7 @@ plt.title('Explained Variance by EOF Mode', fontsize=12)
 plt.xticks(np.arange(1, len(variance_array[:15])+1))
 plt.grid(True, linestyle='--', alpha=0.5)
 plt.tight_layout()
-plt.savefig("Supplemental_Figure4_variance_NPP.png")
+plt.savefig('Supplemental_Figure4_variance_NPP.pdf',dpi=300, bbox_inches='tight')
 
 
 
